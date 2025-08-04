@@ -1,4 +1,3 @@
-// Simple Firebase initialization
 import { initializeApp } from "firebase/app"
 import { getFirestore } from "firebase/firestore"
 
@@ -11,10 +10,17 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 }
 
+// Validate required environment variables
+if (!firebaseConfig.projectId) {
+  throw new Error("Missing NEXT_PUBLIC_FIREBASE_PROJECT_ID environment variable")
+}
+
+if (!firebaseConfig.apiKey) {
+  throw new Error("Missing NEXT_PUBLIC_FIREBASE_API_KEY environment variable")
+}
+
 // Initialize Firebase
 const app = initializeApp(firebaseConfig)
-
-// Initialize Firestore
 const db = getFirestore(app)
 
 export { db }
