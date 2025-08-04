@@ -2,17 +2,18 @@ import { type NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/firebase"
 import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore"
 
+import { query, where, getDocs } from "firebase/firestore"
+
 async function validateApiKey(apiKey: string): Promise<boolean> {
   try {
-    const apiKeyDoc = doc(db, "apiKeys", apiKey)
-    const docSnap = await getDoc(apiKeyDoc)
-
-    if (docSnap.exists()) {
-      const keyData = docSnap.data()
-      // Check if the key is active (you can add more validation logic here)
-      return keyData.active !== false // Default to true if active field doesn't exist
+    const apiKeysCollection = collection(db, "apiKeys")
+    const q = query(apiKeysCollection, where("key", "==", apiKey))
+    const querySnapshot = await getDocs(q)
+    if (!querySnapshot.empty) {
+      // Check if any matching key is active
+      const docData = querySnapshot.docs[0].data()
+      return docData.active !== false // Default to true if active field doesn't exist
     }
-
     return false
   } catch (error) {
     console.error("Error validating API key:", error)
