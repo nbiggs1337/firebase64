@@ -1,85 +1,30 @@
+# Firebase image uploader
 
-# Firebase64: Image Uploader & Viewer
+*Automatically synced with your [v0.dev](https://v0.dev) deployments*
 
-Firebase64 is a simple web application for uploading, storing, and viewing images using Firebase Firestore. Images are stored as base64-encoded strings, making it easy to retrieve and display them directly in the browser.
+[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/noahs-projects-63042d26/v0-firebase-image-uploader)
+[![Built with v0](https://img.shields.io/badge/Built%20with-v0.dev-black?style=for-the-badge)](https://v0.dev/chat/projects/KIIjSNcGVk3)
 
-## Features
+## Overview
 
-- Upload images and store them securely in Firebase Firestore
-- API key authentication for uploads
-- View images via unique URLs
-- Images are served as raw data for direct browser display
-- Built with Next.js, React, and Firebase
+This repository will stay in sync with your deployed chats on [v0.dev](https://v0.dev).
+Any changes you make to your deployed app will be automatically pushed to this repository from [v0.dev](https://v0.dev).
 
-## Getting Started
+## Deployment
 
-### Prerequisites
+Your project is live at:
 
-- Node.js (v18+ recommended)
-- pnpm (or npm/yarn)
-- Firebase project with Firestore enabled
+**[https://vercel.com/noahs-projects-63042d26/v0-firebase-image-uploader](https://vercel.com/noahs-projects-63042d26/v0-firebase-image-uploader)**
 
-### Installation
+## Build your app
 
-1. Clone the repository:
-   ```sh
-   git clone https://github.com/your-username/firebase64.git
-   cd firebase64
-   ```
-2. Install dependencies:
-   ```sh
-   pnpm install
-   # or
-   npm install
-   ```
-3. Configure Firebase:
-   - Copy your Firebase config to `lib/firebase.ts`.
-   - Ensure Firestore rules allow appropriate access.
+Continue building your app on:
 
-### Running Locally
+**[https://v0.dev/chat/projects/KIIjSNcGVk3](https://v0.dev/chat/projects/KIIjSNcGVk3)**
 
-```sh
-pnpm dev
-# or
-npm run dev
-```
+## How It Works
 
-Visit [http://localhost:3000](http://localhost:3000) in your browser.
-
-## API
-
-### Upload Image
-
-`POST /api/upload-image`
-
-**Body:**
-```json
-{
-  "imageData": "<base64 string>",
-  "fileName": "example.jpg",
-  "mimeType": "image/jpeg",
-  "apiKey": "<your-api-key>"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "imageId": "...",
-  "viewUrl": "...",
-  "fileSize": 12345,
-  "fileSizeMB": "0.01",
-  "message": "Image uploaded successfully to Firebase Firestore"
-}
-```
-
-### View Image
-
-`GET /view/[imageId]`
-
-Displays the raw image in the browser.
-
-## License
-
-MIT
+1. Create and modify your project using [v0.dev](https://v0.dev)
+2. Deploy your chats from the v0 interface
+3. Changes are automatically pushed to this repository
+4. Vercel deploys the latest version from this repository
