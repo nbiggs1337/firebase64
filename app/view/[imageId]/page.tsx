@@ -1,9 +1,8 @@
-"use client"
-
-import { useState, useEffect } from "react"
+import { doc, getDoc } from "firebase/firestore"
+import { db } from "@/lib/firebase"
+import { notFound } from "next/navigation"
 
 interface ImageData {
-  imageId: string
   fileName: string
   mimeType: string
   base64Data: string
@@ -12,77 +11,40 @@ interface ImageData {
   createdAt: string
 }
 
-export default function ViewImagePage({ params }: { params: { imageId: string } }) {
-  const [imageData, setImageData] = useState<ImageData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+async function getImage(imageId: string): Promise<ImageData | null> {
+  try {
+    const docRef = doc(db, "images", imageId)
+    const docSnap = await getDoc(docRef)
 
-  useEffect(() => {
-    const fetchImage = async () => {
-      try {
-        const response = await fetch(`/api/get-image/${params.imageId}`)
-        const data = await response.json()
-
-        if (data.success) {
-          setImageData(data)
-        } else {
-          setError(data.error || "Failed to load image")
-        }
-      } catch (err) {
-        setError("Network error occurred")
-      } finally {
-        setLoading(false)
-      }
+    if (docSnap.exists()) {
+      return docSnap.data() as ImageData
     }
+    return null
+  } catch (error) {
+    console.error("Error fetching image:", error)
+    return null
+  }
+}
 
-    if (params.imageId) {
-      fetchImage()
-    }
-  }, [params.imageId])
+export default async function ViewImage({ params }: { params: { imageId: string } }) {
+  const imageData = await getImage(params.imageId)
 
-  if (loading) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "100vh",
-          backgroundColor: "#f0f0f0",
-        }}
-      >
-        <p>Loading...</p>
-      </div>
-    )
+  if (!imageData) {
+    notFound()
   }
 
-  if (error || !imageData) {
-    return (
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          height: "100vh",
-          backgroundColor: "#f0f0f0",
-        }}
-      >
-        <p>Error: {error || "Image not found"}</p>
-      </div>
-    )
-  }
+  const { base64Data, mimeType, fileName } = imageData
+  const imageSrc = `data:${mimeType};base64,${base64Data}`
 
   return (
     <img
-      src={`data:${imageData.mimeType};base64,${imageData.base64Data}`}
-      alt={imageData.fileName}
+      src={imageSrc || "/placeholder.svg"}
+      alt={fileName}
       style={{
         width: "100%",
         height: "100%",
         objectFit: "contain",
         display: "block",
-        margin: 0,
-        padding: 0,
       }}
     />
   )

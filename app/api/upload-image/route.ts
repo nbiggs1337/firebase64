@@ -1,6 +1,24 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/firebase"
-import { collection, addDoc, serverTimestamp } from "firebase/firestore"
+import { collection, addDoc, serverTimestamp, doc, getDoc } from "firebase/firestore"
+
+async function validateApiKey(apiKey: string): Promise<boolean> {
+  try {
+    const apiKeyDoc = doc(db, "apiKeys", apiKey)
+    const docSnap = await getDoc(apiKeyDoc)
+
+    if (docSnap.exists()) {
+      const keyData = docSnap.data()
+      // Check if the key is active (you can add more validation logic here)
+      return keyData.active !== false // Default to true if active field doesn't exist
+    }
+
+    return false
+  } catch (error) {
+    console.error("Error validating API key:", error)
+    return false
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,12 +36,13 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Simple API key validation (you can enhance this)
-    if (apiKey.trim().length === 0 && apiKey !== process.env.FIREBASE_API_KEY) {
+    // Validate API key against Firebase collection
+    const isValidKey = await validateApiKey(apiKey)
+    if (!isValidKey) {
       return NextResponse.json(
         {
           success: false,
-          error: "Invalid API key",
+          error: "Invalid or inactive API key",
         },
         { status: 401 },
       )
@@ -37,6 +56,7 @@ export async function POST(request: NextRequest) {
       fileSize: Math.round((imageData.length * 3) / 4), // Approximate file size from base64
       uploadedAt: serverTimestamp(),
       createdAt: new Date().toISOString(),
+      apiKeyUsed: apiKey, // Track which API key was used
     }
 
     // Save to Firestore
