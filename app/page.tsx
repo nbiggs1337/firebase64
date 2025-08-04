@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Loader2, RefreshCw, FileText, Sparkles, CheckSquare, Square, FolderDown } from "lucide-react"
 import { ArticleViewer } from "./components/article-viewer"
+import { AdminLockscreen } from "./components/admin-lockscreen"
 
 interface Topic {
   id: string
@@ -28,6 +29,7 @@ export default function Dashboard() {
   const [loadingTopics, setLoadingTopics] = useState(false)
   const [generatingArticles, setGeneratingArticles] = useState(false)
   const [savingArticles, setSavingArticles] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
 
   const fetchTopics = async () => {
     setLoadingTopics(true)
@@ -150,6 +152,10 @@ export default function Dashboard() {
 
   const completedArticles = articles.filter((a) => a.status === "completed").length
   const totalArticles = articles.length
+
+  if (!isAuthenticated) {
+    return <AdminLockscreen onAuthenticated={() => setIsAuthenticated(true)} />
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0F1924] to-[#1a2332]">
