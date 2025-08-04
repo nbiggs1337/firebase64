@@ -292,7 +292,9 @@ export default function AdminPanel() {
                       <div className="flex items-center justify-between">
                         <p className="font-medium text-sm truncate">{image.filename}</p>
                         <Badge variant="secondary" className="text-xs">
-                          {image.mimeType.split("/")[1].toUpperCase()}
+                          {image.mimeType && image.mimeType.includes("/")
+                            ? image.mimeType.split("/")[1]?.toUpperCase()
+                            : "N/A"}
                         </Badge>
                       </div>
                       <div className="text-xs text-gray-500 space-y-1">
