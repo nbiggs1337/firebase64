@@ -19,7 +19,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Simple API key validation (you can enhance this)
-    if (apiKey.trim().length === 0) {
+    if (apiKey.trim().length === 0 && apiKey !== process.env.FIREBASE_API_KEY) {
       return NextResponse.json(
         {
           success: false,
