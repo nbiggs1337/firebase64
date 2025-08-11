@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useMemo } from "react"
 import { useDropzone } from "react-dropzone"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Textarea } from "@/components/ui/textarea"
 import {
   Upload,
-  ImageIcon,
+  ImageIcon as ImageIconLucide,
   AlertCircle,
   CheckCircle2,
   Database,
@@ -20,6 +20,7 @@ import {
   LinkIcon,
   FileText,
   Key,
+  Info,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -28,7 +29,7 @@ interface UploadResponse {
   imageId?: string
   viewUrl?: string
   fileSize?: number
-  fileSizeMB?: string
+  fileSizeMB?: string | number
   error?: string
   message?: string
 }
@@ -40,6 +41,20 @@ interface ApiKeyResponse {
   message?: string
 }
 
+type CompressionReport = {
+  originalBytes: number
+  compressedBytes: number
+  ratio: number
+  mimeType: string
+  fileName: string
+}
+
+const MAX_PAYLOAD_BYTES = 3_500_000 // ~3.5 MB target payload to avoid serverless body limits
+const MAX_DIMENSION = 1600 // px
+const MIN_QUALITY = 0.4
+const START_QUALITY = 0.82
+const FETCH_TIMEOUT_MS = 30_000
+
 export default function HomePage() {
   const [apiKey, setApiKey] = useState("")
   const [uploading, setUploading] = useState(false)
@@ -47,6 +62,8 @@ export default function HomePage() {
   const [result, setResult] = useState<UploadResponse | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<string | null>(null)
+  const [compressionInfo, setCompressionInfo] = useState<CompressionReport | null>(null)
+  const [helperInfo, setHelperInfo] = useState<string | null>(null)
 
   // API Key Application State
   const [applying, setApplying] = useState(false)
@@ -64,8 +81,9 @@ export default function HomePage() {
     if (file) {
       setSelectedFile(file)
       setResult(null)
+      setCompressionInfo(null)
+      setHelperInfo(null)
 
-      // Create preview
       const reader = new FileReader()
       reader.onload = () => {
         setPreview(reader.result as string)
@@ -80,23 +98,125 @@ export default function HomePage() {
       "image/*": [".jpeg", ".jpg", ".png", ".gif", ".webp", ".bmp", ".svg"],
     },
     maxFiles: 1,
-    maxSize: 10 * 1024 * 1024, // 10MB
+    // Allow bigger raw file, we'll compress before sending.
+    maxSize: 15 * 1024 * 1024, // 15MB
   })
 
-  const convertToBase64 = (file: File): Promise<string> => {
+  // Utilities
+  const bytesToMB = (b: number) => (b / (1024 * 1024)).toFixed(2)
+  const prettyPercent = (n: number) => `${Math.round(n * 100)}%`
+
+  async function blobToBase64(blob: Blob): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader()
-      reader.readAsDataURL(file)
       reader.onload = () => {
         const result = reader.result as string
-        const base64 = result.split(",")[1]
+        const base64 = result.split(",")[1] // strip data: prefix
         resolve(base64)
       }
       reader.onerror = (error) => reject(error)
+      reader.readAsDataURL(blob)
     })
   }
 
-  const handleUpload = async () => {
+  function calcBase64SizeApprox(base64: string) {
+    // Base64 expands ~4/3
+    return Math.round((base64.length * 3) / 4)
+  }
+
+  async function fileToCanvas(file: File): Promise<{ canvas: HTMLCanvasElement; width: number; height: number }> {
+    const imgUrl = URL.createObjectURL(file)
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const image = new Image()
+        image.onload = () => resolve(image)
+        image.onerror = (e) => reject(e)
+        image.src = imgUrl
+      })
+
+      // Scale down if needed
+      let { width, height } = img
+      const scale = Math.min(1, MAX_DIMENSION / Math.max(width, height))
+      width = Math.round(width * scale)
+      height = Math.round(height * scale)
+
+      const canvas = document.createElement("canvas")
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext("2d")
+      if (!ctx) throw new Error("Canvas 2D context not available")
+      ctx.drawImage(img, 0, 0, width, height)
+      return { canvas, width, height }
+    } finally {
+      URL.revokeObjectURL(imgUrl)
+    }
+  }
+
+  async function compressImageToTarget(file: File): Promise<{ blob: Blob; report: CompressionReport }> {
+    // For non-raster vector (svg) or animated gifs, we won't try to recompress via canvas
+    const isVector = file.type === "image/svg+xml"
+    const isGif = file.type === "image/gif"
+
+    if (isVector || isGif) {
+      const rawBytes = file.size
+      // If it's too large, we still pass through; backend may reject.
+      return {
+        blob: file,
+        report: {
+          originalBytes: rawBytes,
+          compressedBytes: rawBytes,
+          ratio: 1,
+          mimeType: file.type,
+          fileName: file.name,
+        },
+      }
+    }
+
+    const { canvas } = await fileToCanvas(file)
+
+    // Try iterative quality reduction in WebP for best size/quality trade-off
+    let quality = START_QUALITY
+    let lastGoodBlob: Blob | null = null
+    let lastGoodSize = Number.POSITIVE_INFINITY
+
+    // At most 6 iterations to avoid long UI stalls
+    for (let i = 0; i < 6; i++) {
+      const tryQuality = Math.max(MIN_QUALITY, quality)
+      const dataUrl = canvas.toDataURL("image/webp", tryQuality)
+      const byteString = atob(dataUrl.split(",")[1] || "")
+      const array = new Uint8Array(byteString.length)
+      for (let j = 0; j < byteString.length; j++) array[j] = byteString.charCodeAt(j)
+      const blob = new Blob([array], { type: "image/webp" })
+      const size = blob.size
+
+      if (size <= MAX_PAYLOAD_BYTES) {
+        lastGoodBlob = blob
+        lastGoodSize = size
+        break
+      } else {
+        // Keep the best so far, then reduce quality further
+        if (size < lastGoodSize) {
+          lastGoodBlob = blob
+          lastGoodSize = size
+        }
+        // Reduce quality more aggressively after the first attempt
+        quality = quality - 0.15
+      }
+    }
+
+    // Fallback if somehow nothing produced
+    const outBlob = lastGoodBlob ?? (await new Response(canvas.toDataURL("image/webp", MIN_QUALITY)).blob())
+    const report: CompressionReport = {
+      originalBytes: file.size,
+      compressedBytes: outBlob.size,
+      ratio: outBlob.size / file.size,
+      mimeType: "image/webp",
+      fileName: file.name.replace(/\.(jpe?g|png|webp|bmp)$/i, "") + "-compressed.webp",
+    }
+    return { blob: outBlob, report }
+  }
+
+  async function handleUpload() {
     if (!selectedFile || !apiKey.trim()) {
       setResult({
         success: false,
@@ -106,45 +226,93 @@ export default function HomePage() {
     }
 
     setUploading(true)
-    setUploadProgress(0)
+    setUploadProgress(10)
     setResult(null)
+    setHelperInfo(null)
 
     try {
-      setUploadProgress(25)
-      const base64Data = await convertToBase64(selectedFile)
+      // 1) Compress
+      setUploadProgress(30)
+      setHelperInfo("Compressing image to optimize upload...")
+      const { blob: compressedBlob, report } = await compressImageToTarget(selectedFile)
+      setCompressionInfo(report)
 
+      // 2) Convert to base64 (data we actually send)
       setUploadProgress(50)
+      setHelperInfo("Encoding image...")
+      const base64Data = await blobToBase64(compressedBlob)
+      const approxBytes = calcBase64SizeApprox(base64Data)
+
+      // Guard: if still too large, stop early with a helpful message
+      if (approxBytes > MAX_PAYLOAD_BYTES * 1.15) {
+        throw new Error(
+          `Compressed image is still too large (${bytesToMB(approxBytes)} MB). Please upload a smaller image.`,
+        )
+      }
+
+      // 3) POST with timeout so UI doesn't hang
+      setUploadProgress(65)
+      setHelperInfo("Uploading to server...")
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+
       const response = await fetch("/api/upload-image", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageData: base64Data,
-          fileName: selectedFile.name,
-          mimeType: selectedFile.type,
+          fileName: report.fileName,
+          mimeType: report.mimeType,
           apiKey: apiKey.trim(),
         }),
-      })
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeout))
 
-      setUploadProgress(75)
-      const data = await response.json()
+      // 4) Parse response
+      setUploadProgress(90)
+      setHelperInfo("Finalizing...")
+
+      let data: UploadResponse
+      try {
+        data = await response.json()
+      } catch {
+        // Handle non-JSON responses gracefully
+        const text = await response.text()
+        data = { success: false, error: `Upload failed: ${response.status} ${response.statusText} - ${text}` }
+      }
+
+      if (!response.ok) {
+        setResult({ success: false, error: data.error || "Upload failed" })
+      } else {
+        setResult({
+          ...data,
+          fileSize: typeof data.fileSize === "number" ? data.fileSize : approxBytes,
+          fileSizeMB:
+            typeof data.fileSizeMB === "string" || typeof data.fileSizeMB === "number"
+              ? data.fileSizeMB
+              : bytesToMB(approxBytes),
+        })
+      }
+
       setUploadProgress(100)
-
-      setResult(data)
+      setHelperInfo(null)
     } catch (error) {
-      console.error("Upload error:", error)
-      setResult({
-        success: false,
-        error: error instanceof Error ? error.message : "An unexpected error occurred",
-      })
+      const message =
+        error instanceof DOMException && error.name === "AbortError"
+          ? "Upload timed out. Please try again."
+          : error instanceof Error
+            ? error.message
+            : "An unexpected error occurred"
+
+      setResult({ success: false, error: message })
+      setHelperInfo(null)
     } finally {
       setUploading(false)
       setTimeout(() => setUploadProgress(0), 1000)
     }
   }
 
-  const handleApiKeyApplication = async () => {
+  async function handleApiKeyApplication() {
     if (!applicationData.name || !applicationData.email || !applicationData.useCase) {
       setApplicationResult({
         success: false,
@@ -159,27 +327,16 @@ export default function HomePage() {
     try {
       const response = await fetch("/api/apply-api-key", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(applicationData),
       })
-
       const data = await response.json()
       setApplicationResult(data)
 
       if (data.success) {
-        // Reset form on success
-        setApplicationData({
-          name: "",
-          email: "",
-          company: "",
-          website: "",
-          useCase: "",
-        })
+        setApplicationData({ name: "", email: "", company: "", website: "", useCase: "" })
       }
     } catch (error) {
-      console.error("Application error:", error)
       setApplicationResult({
         success: false,
         error: error instanceof Error ? error.message : "An unexpected error occurred",
@@ -194,7 +351,15 @@ export default function HomePage() {
     setPreview(null)
     setResult(null)
     setUploadProgress(0)
+    setCompressionInfo(null)
+    setHelperInfo(null)
   }
+
+  const compressionSummary = useMemo(() => {
+    if (!compressionInfo) return null
+    const { originalBytes, compressedBytes, ratio } = compressionInfo
+    return `Compressed ${bytesToMB(originalBytes)}MB → ${bytesToMB(compressedBytes)}MB (${prettyPercent(1 - ratio)} smaller)`
+  }, [compressionInfo])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-100 p-4">
@@ -213,7 +378,7 @@ export default function HomePage() {
           <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
             <span>✓ 10MB max file size</span>
             <span>✓ Multiple formats supported</span>
-            <span>✓ Instant CDN delivery</span>
+            <span>✓ Instant delivery</span>
           </div>
         </div>
 
@@ -254,7 +419,7 @@ export default function HomePage() {
                     </CardTitle>
                     <CardDescription>
                       Upload your image and get an instant access URL. Supports JPEG, PNG, GIF, WebP, BMP, and SVG
-                      formats.
+                      formats. Images are automatically optimized before upload to ensure fast and reliable delivery.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-6">
@@ -283,11 +448,14 @@ export default function HomePage() {
                     >
                       <input {...getInputProps()} />
                       <div className="space-y-4">
-                        <ImageIcon className="w-12 h-12 mx-auto text-gray-400" />
+                        <ImageIconLucide className="w-12 h-12 mx-auto text-gray-400" />
                         {selectedFile ? (
                           <div className="space-y-2">
                             <p className="text-sm font-medium text-gray-900">{selectedFile.name}</p>
-                            <p className="text-xs text-gray-500">{(selectedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                            <p className="text-xs text-gray-500">
+                              Original: {bytesToMB(selectedFile.size)} MB
+                              {compressionSummary ? ` • ${compressionSummary}` : ""}
+                            </p>
                           </div>
                         ) : (
                           <div className="space-y-2">
@@ -296,7 +464,7 @@ export default function HomePage() {
                                 ? "Drop the image here..."
                                 : "Drag & drop an image here, or click to select"}
                             </p>
-                            <p className="text-xs text-gray-500">Maximum file size: 10MB</p>
+                            <p className="text-xs text-gray-500">Maximum file size: 15MB</p>
                           </div>
                         )}
                       </div>
@@ -322,12 +490,19 @@ export default function HomePage() {
                         <Label>Upload Progress</Label>
                         <Progress value={uploadProgress} className="w-full" />
                         <p className="text-sm text-gray-600 text-center">
-                          {uploadProgress < 25 && "Preparing upload..."}
-                          {uploadProgress >= 25 && uploadProgress < 50 && "Processing image..."}
-                          {uploadProgress >= 50 && uploadProgress < 75 && "Uploading to server..."}
-                          {uploadProgress >= 75 && uploadProgress < 100 && "Finalizing..."}
+                          {uploadProgress < 30 && "Preparing upload..."}
+                          {uploadProgress >= 30 && uploadProgress < 50 && "Compressing image..."}
+                          {uploadProgress >= 50 && uploadProgress < 65 && "Encoding..."}
+                          {uploadProgress >= 65 && uploadProgress < 90 && "Uploading to server..."}
+                          {uploadProgress >= 90 && uploadProgress < 100 && "Finalizing..."}
                           {uploadProgress === 100 && "Complete!"}
                         </p>
+                        {helperInfo && (
+                          <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+                            <Info className="w-3 h-3" />
+                            <span>{helperInfo}</span>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -369,7 +544,15 @@ export default function HomePage() {
                                   </div>
                                   <div className="flex items-center gap-1">
                                     <HardDrive className="w-4 h-4" />
-                                    <span>Size: {result.fileSizeMB} MB</span>
+                                    <span>
+                                      Size:{" "}
+                                      {typeof result.fileSizeMB === "string"
+                                        ? result.fileSizeMB
+                                        : typeof result.fileSizeMB === "number"
+                                          ? result.fileSizeMB.toFixed(2)
+                                          : "—"}{" "}
+                                      MB
+                                    </span>
                                   </div>
                                 </div>
                                 {result.viewUrl && (
@@ -405,7 +588,7 @@ export default function HomePage() {
                       Apply for API Key
                     </CardTitle>
                     <CardDescription>
-                      Fill out the form below to request access to our image upload API. We'll review your application
+                      Fill out the form below to request access to our image upload API. We’ll review your application
                       and provide you with an API key.
                     </CardDescription>
                   </CardHeader>
@@ -510,7 +693,7 @@ export default function HomePage() {
                                   <code className="text-sm break-all font-mono">{applicationResult.apiKey}</code>
                                 </div>
                                 <p className="text-xs text-green-700">
-                                  Please save this API key securely. You can now use it to upload images via our API.
+                                  Save this API key securely. You can now use it to upload images via our API.
                                 </p>
                               </div>
                             )}
@@ -521,10 +704,7 @@ export default function HomePage() {
 
                     <div className="text-xs text-gray-500 space-y-1">
                       <p>* Required fields</p>
-                      <p>
-                        We typically review applications within 24 hours. You'll receive your API key via email once
-                        approved.
-                      </p>
+                      <p>We typically review applications within 24 hours.</p>
                     </div>
                   </CardContent>
                 </TabsContent>
@@ -545,7 +725,7 @@ export default function HomePage() {
                   </div>
                   <div>
                     <h4 className="font-medium">Fast Upload</h4>
-                    <p className="text-sm text-gray-600">Lightning-fast image processing and storage</p>
+                    <p className="text-sm text-gray-600">Optimized images for reliable delivery</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
@@ -554,7 +734,7 @@ export default function HomePage() {
                   </div>
                   <div>
                     <h4 className="font-medium">Instant URLs</h4>
-                    <p className="text-sm text-gray-600">Get immediate access URLs for your images</p>
+                    <p className="text-sm text-gray-600">Get access URLs immediately after upload</p>
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
@@ -563,7 +743,7 @@ export default function HomePage() {
                   </div>
                   <div>
                     <h4 className="font-medium">Secure Storage</h4>
-                    <p className="text-sm text-gray-600">Enterprise-grade security and reliability</p>
+                    <p className="text-sm text-gray-600">Reliable, production-grade storage</p>
                   </div>
                 </div>
               </CardContent>
