@@ -156,7 +156,7 @@ if __name__ == "__main__":
             </div>
             <div>
               <h1 className="text-3xl font-bold text-gray-900">API Documentation</h1>
-              <p className="text-gray-600">Complete guide to using the ImageAPI service</p>
+              <p className="text-gray-600">Complete guide to using the FireBase64 service</p>
             </div>
           </div>
         </div>
