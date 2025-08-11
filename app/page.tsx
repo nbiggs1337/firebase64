@@ -49,11 +49,11 @@ type CompressionReport = {
   fileName: string
 }
 
-const MAX_PAYLOAD_BYTES = 3_500_000 // ~3.5 MB target payload to avoid serverless body limits
-const MAX_DIMENSION = 1600 // px
-const MIN_QUALITY = 0.4
-const START_QUALITY = 0.82
-const FETCH_TIMEOUT_MS = 30_000
+const MAX_PAYLOAD_BYTES = 2_000_000 // Reduced to 2MB for better reliability
+const MAX_DIMENSION = 1200 // Further reduced max dimension
+const MIN_QUALITY = 0.6
+const START_QUALITY = 0.75
+const FETCH_TIMEOUT_MS = 20_000 // Reduced timeout to 20 seconds
 
 export default function HomePage() {
   const [apiKey, setApiKey] = useState("")
@@ -98,7 +98,6 @@ export default function HomePage() {
       "image/*": [".jpeg", ".jpg", ".png", ".gif", ".webp", ".bmp", ".svg"],
     },
     maxFiles: 1,
-    // Allow bigger raw file, we'll compress before sending.
     maxSize: 15 * 1024 * 1024, // 15MB
   })
 
@@ -111,7 +110,7 @@ export default function HomePage() {
       const reader = new FileReader()
       reader.onload = () => {
         const result = reader.result as string
-        const base64 = result.split(",")[1] // strip data: prefix
+        const base64 = result.split(",")[1]
         resolve(base64)
       }
       reader.onerror = (error) => reject(error)
@@ -120,7 +119,6 @@ export default function HomePage() {
   }
 
   function calcBase64SizeApprox(base64: string) {
-    // Base64 expands ~4/3
     return Math.round((base64.length * 3) / 4)
   }
 
@@ -134,7 +132,6 @@ export default function HomePage() {
         image.src = imgUrl
       })
 
-      // Scale down if needed
       let { width, height } = img
       const scale = Math.min(1, MAX_DIMENSION / Math.max(width, height))
       width = Math.round(width * scale)
@@ -153,13 +150,11 @@ export default function HomePage() {
   }
 
   async function compressImageToTarget(file: File): Promise<{ blob: Blob; report: CompressionReport }> {
-    // For non-raster vector (svg) or animated gifs, we won't try to recompress via canvas
     const isVector = file.type === "image/svg+xml"
     const isGif = file.type === "image/gif"
 
     if (isVector || isGif) {
       const rawBytes = file.size
-      // If it's too large, we still pass through; backend may reject.
       return {
         blob: file,
         report: {
@@ -174,13 +169,12 @@ export default function HomePage() {
 
     const { canvas } = await fileToCanvas(file)
 
-    // Try iterative quality reduction in WebP for best size/quality trade-off
     let quality = START_QUALITY
     let lastGoodBlob: Blob | null = null
     let lastGoodSize = Number.POSITIVE_INFINITY
 
-    // At most 6 iterations to avoid long UI stalls
-    for (let i = 0; i < 6; i++) {
+    // More aggressive compression with fewer iterations
+    for (let i = 0; i < 4; i++) {
       const tryQuality = Math.max(MIN_QUALITY, quality)
       const dataUrl = canvas.toDataURL("image/webp", tryQuality)
       const byteString = atob(dataUrl.split(",")[1] || "")
@@ -194,17 +188,14 @@ export default function HomePage() {
         lastGoodSize = size
         break
       } else {
-        // Keep the best so far, then reduce quality further
         if (size < lastGoodSize) {
           lastGoodBlob = blob
           lastGoodSize = size
         }
-        // Reduce quality more aggressively after the first attempt
-        quality = quality - 0.15
+        quality = quality - 0.2 // More aggressive quality reduction
       }
     }
 
-    // Fallback if somehow nothing produced
     const outBlob = lastGoodBlob ?? (await new Response(canvas.toDataURL("image/webp", MIN_QUALITY)).blob())
     const report: CompressionReport = {
       originalBytes: file.size,
@@ -232,58 +223,72 @@ export default function HomePage() {
 
     try {
       // 1) Compress
-      setUploadProgress(30)
-      setHelperInfo("Compressing image to optimize upload...")
+      setUploadProgress(25)
+      setHelperInfo("Compressing image...")
       const { blob: compressedBlob, report } = await compressImageToTarget(selectedFile)
       setCompressionInfo(report)
 
-      // 2) Convert to base64 (data we actually send)
-      setUploadProgress(50)
+      // 2) Convert to base64
+      setUploadProgress(45)
       setHelperInfo("Encoding image...")
       const base64Data = await blobToBase64(compressedBlob)
       const approxBytes = calcBase64SizeApprox(base64Data)
 
-      // Guard: if still too large, stop early with a helpful message
-      if (approxBytes > MAX_PAYLOAD_BYTES * 1.15) {
+      // Guard against oversized payloads
+      if (approxBytes > MAX_PAYLOAD_BYTES * 1.1) {
         throw new Error(
-          `Compressed image is still too large (${bytesToMB(approxBytes)} MB). Please upload a smaller image.`,
+          `Image is too large after compression (${bytesToMB(approxBytes)} MB). Please use a smaller image.`,
         )
       }
 
-      // 3) POST with timeout so UI doesn't hang
-      setUploadProgress(65)
+      // 3) Upload with better error handling
+      setUploadProgress(60)
       setHelperInfo("Uploading to server...")
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
 
-      const response = await fetch("/api/upload-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const controller = new AbortController()
+      const timeout = setTimeout(() => {
+        controller.abort()
+        console.log("Upload aborted due to client timeout")
+      }, FETCH_TIMEOUT_MS)
+
+      try {
+        const uploadPayload = {
           imageData: base64Data,
           fileName: report.fileName,
           mimeType: report.mimeType,
           apiKey: apiKey.trim(),
-        }),
-        signal: controller.signal,
-      }).finally(() => clearTimeout(timeout))
+        }
 
-      // 4) Parse response
-      setUploadProgress(90)
-      setHelperInfo("Finalizing...")
+        console.log("Starting upload request...")
+        const response = await fetch("/api/upload-image", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(uploadPayload),
+          signal: controller.signal,
+        })
 
-      let data: UploadResponse
-      try {
-        data = await response.json()
-      } catch {
-        // Handle non-JSON responses gracefully
-        const text = await response.text()
-        data = { success: false, error: `Upload failed: ${response.status} ${response.statusText} - ${text}` }
-      }
+        clearTimeout(timeout)
+        console.log("Upload response received:", response.status)
 
-      if (!response.ok) {
-        setResult({ success: false, error: data.error || "Upload failed" })
-      } else {
+        setUploadProgress(85)
+        setHelperInfo("Processing response...")
+
+        let data: UploadResponse
+        try {
+          const responseText = await response.text()
+          console.log("Response text length:", responseText.length)
+          data = JSON.parse(responseText)
+        } catch (parseError) {
+          console.error("JSON parse error:", parseError)
+          throw new Error(`Server returned invalid response (${response.status})`)
+        }
+
+        if (!response.ok) {
+          throw new Error(data.error || `Upload failed with status ${response.status}`)
+        }
+
         setResult({
           ...data,
           fileSize: typeof data.fileSize === "number" ? data.fileSize : approxBytes,
@@ -292,23 +297,33 @@ export default function HomePage() {
               ? data.fileSizeMB
               : bytesToMB(approxBytes),
         })
-      }
 
-      setUploadProgress(100)
-      setHelperInfo(null)
+        setUploadProgress(100)
+        setHelperInfo("Upload complete!")
+        console.log("Upload successful!")
+      } catch (fetchError) {
+        clearTimeout(timeout)
+        throw fetchError
+      }
     } catch (error) {
-      const message =
-        error instanceof DOMException && error.name === "AbortError"
-          ? "Upload timed out. Please try again."
-          : error instanceof Error
-            ? error.message
-            : "An unexpected error occurred"
+      console.error("Upload error:", error)
+
+      let message = "An unexpected error occurred"
+
+      if (error instanceof DOMException && error.name === "AbortError") {
+        message = "Upload timed out. Please try with a smaller image."
+      } else if (error instanceof Error) {
+        message = error.message
+      }
 
       setResult({ success: false, error: message })
       setHelperInfo(null)
     } finally {
       setUploading(false)
-      setTimeout(() => setUploadProgress(0), 1000)
+      setTimeout(() => {
+        setUploadProgress(0)
+        setHelperInfo(null)
+      }, 2000)
     }
   }
 
@@ -490,11 +505,11 @@ export default function HomePage() {
                         <Label>Upload Progress</Label>
                         <Progress value={uploadProgress} className="w-full" />
                         <p className="text-sm text-gray-600 text-center">
-                          {uploadProgress < 30 && "Preparing upload..."}
-                          {uploadProgress >= 30 && uploadProgress < 50 && "Compressing image..."}
-                          {uploadProgress >= 50 && uploadProgress < 65 && "Encoding..."}
-                          {uploadProgress >= 65 && uploadProgress < 90 && "Uploading to server..."}
-                          {uploadProgress >= 90 && uploadProgress < 100 && "Finalizing..."}
+                          {uploadProgress < 25 && "Preparing upload..."}
+                          {uploadProgress >= 25 && uploadProgress < 45 && "Compressing image..."}
+                          {uploadProgress >= 45 && uploadProgress < 60 && "Encoding..."}
+                          {uploadProgress >= 60 && uploadProgress < 85 && "Uploading to server..."}
+                          {uploadProgress >= 85 && uploadProgress < 100 && "Finalizing..."}
                           {uploadProgress === 100 && "Complete!"}
                         </p>
                         {helperInfo && (
@@ -588,7 +603,7 @@ export default function HomePage() {
                       Apply for API Key
                     </CardTitle>
                     <CardDescription>
-                      Fill out the form below to request access to our image upload API. We’ll review your application
+                      Fill out the form below to request access to our image upload API. We'll review your application
                       and provide you with an API key.
                     </CardDescription>
                   </CardHeader>
