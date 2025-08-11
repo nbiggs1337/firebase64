@@ -52,10 +52,19 @@ export async function GET(request: NextRequest) {
 
     console.log(`[ADMIN] ✓ Query executed, found ${snapshot.docs.length} documents`)
 
-    const images = snapshot.docs.map((doc: any) => ({
-      id: doc.id,
-      ...doc.data(),
-    }))
+    const images = snapshot.docs.map((doc: any) => {
+      const data = doc.data()
+      return {
+        id: doc.id,
+        filename: data.filename || "unknown.file",
+        uploadedAt: data.uploadedAt || new Date().toISOString(),
+        apiKeyUsed: data.apiKeyUsed || "unknown",
+        size: data.size || 0,
+        mimeType: data.mimeType || "application/octet-stream",
+        base64Data: data.base64Data || "",
+        ...data,
+      }
+    })
 
     console.log(`[ADMIN] ✓ Returning ${images.length} images`)
 

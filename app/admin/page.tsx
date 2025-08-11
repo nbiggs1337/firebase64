@@ -186,7 +186,7 @@ export default function AdminPanel() {
   }
 
   const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return "0 Bytes"
+    if (!bytes || bytes === 0) return "0 Bytes"
     const k = 1024
     const sizes = ["Bytes", "KB", "MB", "GB"]
     const i = Math.floor(Math.log(bytes) / Math.log(k))
@@ -194,7 +194,28 @@ export default function AdminPanel() {
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString()
+    if (!dateString) return "Unknown date"
+    try {
+      return new Date(dateString).toLocaleString()
+    } catch {
+      return "Invalid date"
+    }
+  }
+
+  const getFileExtension = (mimeType: string) => {
+    if (!mimeType || typeof mimeType !== "string") return "FILE"
+
+    const parts = mimeType.split("/")
+    if (parts.length < 2) return "FILE"
+
+    return parts[1].toUpperCase()
+  }
+
+  const getSafeImageSrc = (image: ImageRecord) => {
+    if (!image.base64Data || !image.mimeType) {
+      return "/placeholder.svg?height=200&width=300&text=No+Image"
+    }
+    return `data:${image.mimeType};base64,${image.base64Data}`
   }
 
   useEffect(() => {
@@ -352,27 +373,31 @@ export default function AdminPanel() {
                   <div key={image.id} className="border rounded-lg p-4 space-y-3">
                     <div className="aspect-video bg-gray-100 rounded-lg overflow-hidden">
                       <img
-                        src={`data:${image.mimeType};base64,${image.base64Data}`}
-                        alt={image.filename}
+                        src={getSafeImageSrc(image) || "/placeholder.svg"}
+                        alt={image.filename || "Uploaded image"}
                         className="w-full h-full object-cover cursor-pointer hover:opacity-80 transition-opacity"
                         onClick={() => {
                           setSelectedImage(image)
                           setShowImageModal(true)
                         }}
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement
+                          target.src = "/placeholder.svg?height=200&width=300&text=Error+Loading"
+                        }}
                       />
                     </div>
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <p className="font-medium text-sm truncate">{image.filename}</p>
+                        <p className="font-medium text-sm truncate">{image.filename || "Unknown file"}</p>
                         <Badge variant="secondary" className="text-xs">
-                          {image.mimeType.split("/")[1].toUpperCase()}
+                          {getFileExtension(image.mimeType)}
                         </Badge>
                       </div>
                       <div className="text-xs text-gray-500 space-y-1">
                         <p>Size: {formatFileSize(image.size)}</p>
                         <p>Uploaded: {formatDate(image.uploadedAt)}</p>
                         <p>
-                          API Key: <code className="bg-gray-100 px-1 rounded">{image.apiKeyUsed}</code>
+                          API Key: <code className="bg-gray-100 px-1 rounded">{image.apiKeyUsed || "unknown"}</code>
                         </p>
                       </div>
                       <div className="flex space-x-2">
@@ -434,28 +459,32 @@ export default function AdminPanel() {
           <div className="bg-white rounded-lg max-w-4xl max-h-[90vh] overflow-auto">
             <div className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">{selectedImage.filename}</h3>
+                <h3 className="text-lg font-semibold">{selectedImage.filename || "Unknown file"}</h3>
                 <Button variant="outline" size="sm" onClick={() => setShowImageModal(false)}>
                   Close
                 </Button>
               </div>
               <div className="space-y-4">
                 <img
-                  src={`data:${selectedImage.mimeType};base64,${selectedImage.base64Data}`}
-                  alt={selectedImage.filename}
+                  src={getSafeImageSrc(selectedImage) || "/placeholder.svg"}
+                  alt={selectedImage.filename || "Uploaded image"}
                   className="w-full max-h-96 object-contain rounded-lg"
+                  onError={(e) => {
+                    const target = e.target as HTMLImageElement
+                    target.src = "/placeholder.svg?height=400&width=600&text=Error+Loading+Image"
+                  }}
                 />
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
                     <p className="font-medium">File Details</p>
                     <p>Size: {formatFileSize(selectedImage.size)}</p>
-                    <p>Type: {selectedImage.mimeType}</p>
+                    <p>Type: {selectedImage.mimeType || "Unknown"}</p>
                     <p>Uploaded: {formatDate(selectedImage.uploadedAt)}</p>
                   </div>
                   <div>
                     <p className="font-medium">API Information</p>
                     <p>
-                      Key: <code className="bg-gray-100 px-1 rounded">{selectedImage.apiKeyUsed}</code>
+                      Key: <code className="bg-gray-100 px-1 rounded">{selectedImage.apiKeyUsed || "unknown"}</code>
                     </p>
                     <p>
                       Image ID: <code className="bg-gray-100 px-1 rounded">{selectedImage.id}</code>
