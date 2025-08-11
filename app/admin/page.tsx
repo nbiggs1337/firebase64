@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Trash2, Eye, ChevronLeft, ChevronRight, Shield, LogOut } from "lucide-react"
+import { Trash2, Eye, ChevronLeft, ChevronRight, Shield, LogOut, AlertCircle } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 
 interface ImageRecord {
@@ -25,8 +25,10 @@ export default function AdminPanel() {
   const [loading, setLoading] = useState(false)
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
+  const [totalImages, setTotalImages] = useState(0)
   const [selectedImage, setSelectedImage] = useState<ImageRecord | null>(null)
   const [showImageModal, setShowImageModal] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const handleLogin = async () => {
     if (!adminKey.trim()) {
@@ -39,6 +41,7 @@ export default function AdminPanel() {
     }
 
     try {
+      console.log("[ADMIN CLIENT] Attempting login...")
       const response = await fetch("/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -48,6 +51,7 @@ export default function AdminPanel() {
       const data = await response.json()
 
       if (data.success) {
+        console.log("[ADMIN CLIENT] ✓ Login successful")
         setIsAuthenticated(true)
         localStorage.setItem("adminAuth", "true")
         toast({
@@ -56,6 +60,7 @@ export default function AdminPanel() {
         })
         fetchImages(1)
       } else {
+        console.log("[ADMIN CLIENT] ✗ Login failed:", data.error)
         toast({
           title: "Access Denied",
           description: "Invalid admin key",
@@ -63,6 +68,7 @@ export default function AdminPanel() {
         })
       }
     } catch (error) {
+      console.error("[ADMIN CLIENT] Login error:", error)
       toast({
         title: "Error",
         description: "Failed to authenticate",
@@ -72,26 +78,59 @@ export default function AdminPanel() {
   }
 
   const fetchImages = async (page: number) => {
+    console.log(`[ADMIN CLIENT] Fetching images for page ${page}`)
     setLoading(true)
+    setError(null)
+
     try {
-      const response = await fetch(`/api/admin/images?page=${page}&limit=100`)
+      // Add timeout to the fetch request
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 15000) // 15 second timeout
+
+      const response = await fetch(`/api/admin/images?page=${page}&limit=100`, {
+        signal: controller.signal,
+      })
+
+      clearTimeout(timeoutId)
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+
       const data = await response.json()
 
       if (data.success) {
+        console.log(`[ADMIN CLIENT] ✓ Fetched ${data.images.length} images`)
         setImages(data.images)
         setTotalPages(data.totalPages)
+        setTotalImages(data.totalImages)
         setCurrentPage(page)
+        setError(null)
       } else {
+        console.error("[ADMIN CLIENT] API returned error:", data.error)
+        setError(data.error || "Failed to fetch images")
         toast({
           title: "Error",
-          description: "Failed to fetch images",
+          description: data.error || "Failed to fetch images",
           variant: "destructive",
         })
       }
     } catch (error) {
+      console.error("[ADMIN CLIENT] Fetch error:", error)
+
+      let errorMessage = "Failed to fetch images"
+      if (error instanceof Error) {
+        if (error.name === "AbortError") {
+          errorMessage = "Request timed out. Please try again."
+        } else {
+          errorMessage = error.message
+        }
+      }
+
+      setError(errorMessage)
       toast({
         title: "Error",
-        description: "Failed to fetch images",
+        description: errorMessage,
         variant: "destructive",
       })
     } finally {
@@ -103,6 +142,7 @@ export default function AdminPanel() {
     if (!confirm("Are you sure you want to delete this image?")) return
 
     try {
+      console.log(`[ADMIN CLIENT] Deleting image ${imageId}`)
       const response = await fetch(`/api/admin/delete-image`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
@@ -112,19 +152,22 @@ export default function AdminPanel() {
       const data = await response.json()
 
       if (data.success) {
+        console.log(`[ADMIN CLIENT] ✓ Image ${imageId} deleted`)
         toast({
           title: "Success",
           description: "Image deleted successfully",
         })
         fetchImages(currentPage)
       } else {
+        console.error("[ADMIN CLIENT] Delete failed:", data.error)
         toast({
           title: "Error",
-          description: "Failed to delete image",
+          description: data.error || "Failed to delete image",
           variant: "destructive",
         })
       }
     } catch (error) {
+      console.error("[ADMIN CLIENT] Delete error:", error)
       toast({
         title: "Error",
         description: "Failed to delete image",
@@ -134,10 +177,12 @@ export default function AdminPanel() {
   }
 
   const logout = () => {
+    console.log("[ADMIN CLIENT] Logging out")
     setIsAuthenticated(false)
     localStorage.removeItem("adminAuth")
     setImages([])
     setAdminKey("")
+    setError(null)
   }
 
   const formatFileSize = (bytes: number) => {
@@ -155,6 +200,7 @@ export default function AdminPanel() {
   useEffect(() => {
     const savedAuth = localStorage.getItem("adminAuth")
     if (savedAuth === "true") {
+      console.log("[ADMIN CLIENT] Found saved auth, auto-logging in")
       setIsAuthenticated(true)
       fetchImages(1)
     }
@@ -222,7 +268,7 @@ export default function AdminPanel() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-gray-600">Total Images</p>
-                  <p className="text-2xl font-bold text-gray-900">{images.length}</p>
+                  <p className="text-2xl font-bold text-gray-900">{totalImages}</p>
                 </div>
                 <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
                   <Eye className="w-6 h-6 text-blue-600" />
@@ -258,6 +304,24 @@ export default function AdminPanel() {
           </Card>
         </div>
 
+        {/* Error State */}
+        {error && (
+          <Card className="mb-8">
+            <CardContent className="p-6">
+              <div className="flex items-center space-x-3 text-red-600">
+                <AlertCircle className="w-5 h-5" />
+                <div>
+                  <p className="font-medium">Error loading images</p>
+                  <p className="text-sm text-red-500">{error}</p>
+                </div>
+                <Button onClick={() => fetchImages(currentPage)} variant="outline" size="sm" className="ml-auto">
+                  Retry
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Images Grid */}
         <Card>
           <CardHeader>
@@ -266,8 +330,17 @@ export default function AdminPanel() {
           </CardHeader>
           <CardContent>
             {loading ? (
-              <div className="flex items-center justify-center py-12">
+              <div className="flex flex-col items-center justify-center py-12 space-y-4">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
+                <p className="text-sm text-gray-500">Loading images...</p>
+              </div>
+            ) : error ? (
+              <div className="text-center py-12">
+                <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+                <p className="text-gray-500 mb-4">Failed to load images</p>
+                <Button onClick={() => fetchImages(currentPage)} variant="outline">
+                  Try Again
+                </Button>
               </div>
             ) : images.length === 0 ? (
               <div className="text-center py-12">
@@ -326,7 +399,7 @@ export default function AdminPanel() {
             )}
 
             {/* Pagination */}
-            {totalPages > 1 && (
+            {totalPages > 1 && !loading && !error && (
               <div className="flex items-center justify-center space-x-2 mt-8">
                 <Button
                   variant="outline"
